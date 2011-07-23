@@ -14,22 +14,22 @@ import logging
 import os 
 
 from google.appengine.api import memcache
-  
+memcache = memcache.Client()
 
 ACTIVE_ON_DEV_SERVER = False
       
-def memoize(time=1000000, force_cache=False):
-    
+def memoize(time=60*60*24, force_cache=False, version_aware=False):    
     """Decorator to memoize functions using memcache.
     
     Optional Args:
       time - duration before cache is refreshed
       force_cache - forces caching on dev_server (useful for APIs, etc.)
+      version_aware - ignores cache values from a different app version
       force_run - forces fxn to run and cache to refresh
     
     Usage:
       
-      @memoize(86400)
+      @memoize(86400) #or memoize()
       def updateAllEntities(key_name, params, force_run=False):
          entity = Model.get_by_key_name(key_name)
          for param in params.items():
@@ -40,55 +40,58 @@ def memoize(time=1000000, force_cache=False):
     """
     def decorator(fxn):
         def wrapper(*args, **kwargs):
-            approved_args=['Link', 'Key', 'str', 'unicode', 'int','float', 'bool'] 
+            approved_args = ['Link', 'Key', 'str', 'unicode', 'int', 'float', 'bool'] 
             arg_string = ""
             for arg in args:
-              if type(arg).__name__ in approved_args: 
-                arg_string += str( arg )
-              else: raise UnsupportedArgumentError(arg)
+                if type(arg).__name__ in approved_args: 
+                    arg_string += str(arg) + ','
+                else: raise UnsupportedArgumentError(arg)
             for kwarg in kwargs.items():
-              if type(kwarg[1]).__name__ in approved_args: 
-                arg_string += str( kwarg[1] )
-              else: raise UnsupportedArgumentError(arg)             
-            key = fxn.__name__ + arg_string
+                if type(kwarg[1]).__name__ in approved_args: 
+                    arg_string += str(kwarg[1]) + ','
+                else: raise UnsupportedArgumentError(kwarg)             
+            key = fxn.__name__ + '(' + arg_string + ')'
+            if version_aware:
+                key = os.environ['CURRENT_VERSION_ID'] + '/' + key
             logging.debug('caching key: %s' % key)
             data = memcache.get(key)
             if Debug(): 
                 if not ACTIVE_ON_DEV_SERVER and not force_cache: 
-                  return fxn(*args, **kwargs) 
+                    return fxn(*args, **kwargs) 
             if kwargs.get('force_run'):
-               logging.info("forced execution of %s" % fxn.__name__)
+                logging.info("forced execution of %s" % fxn.__name__)
             elif data:
+                logging.debug('cache hit for key: %s' % key)
                 if data.__class__ == NoneVal: 
-                   data = None
+                    data = None
                 return data
             data = fxn(*args, **kwargs)
             if data is None: data = NoneVal() 
             memcache.set(key, data, time)
             return data
         return wrapper
-    return decorator  
+    return decorator
 
 
 
 """ Util Methods """
 
 class UnsupportedArgumentError(Exception):
-  ''' An unsupported argument has been passed to Memoize fxn '''
-  def __init__(self, value):
-       self.arg = value
-  def __str__(self):
-       return repr(type(self.arg).__name__ + " is not a supported arg type")
+    ''' An unsupported argument has been passed to Memoize fxn '''
+    def __init__(self, value):
+        self.arg = value
+    def __str__(self):
+        return repr(type(self.arg).__name__ + " is not a supported arg type")
 
 def Debug():
     '''return True if script is running in the development envionment'''
-    return  'Development' in os.environ['SERVER_SOFTWARE']
+    return os.environ['SERVER_SOFTWARE'].startswith('Dev')
     
     
 """ Singleton Classes """
     
 class NoneVal():
-  ''' A replacement for None, so a memoized fxn can return a None val
-  without making the Memoize fxn assume that the "None" means there
-  isn't a cached value '''
-  pass
+    ''' A replacement for None, so a memoized fxn can return a None val
+      without making the Memoize fxn assume that the "None" means there
+      isn't a cached value '''
+    pass
