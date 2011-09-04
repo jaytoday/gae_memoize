@@ -1,7 +1,6 @@
 # memoize decorator (for Google App Engine)
 Decorator to memoize functions results using Google App Engine current instance memory (cachepy) and memcache.
-Support any pickable arguments and function returns.
-
+    
 Optional Decorator Args:
   time - duration before cache is refreshed
   ignore_args - sequence numbers (0, 1, 3...) of decorated funcion args to be ignored 
