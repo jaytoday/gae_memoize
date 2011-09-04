@@ -11,26 +11,33 @@
 # limitations under the License.
 
 import logging
+import pickle
+from pickle import PicklingError
 import os 
 
 from google.appengine.api import memcache
+import cachepy
+
 memcache = memcache.Client()
 
-ACTIVE_ON_DEV_SERVER = False
+ACTIVE_ON_DEV_SERVER = True
       
-def memoize(time=60*60*24, force_cache=False, version_aware=False):    
-    """Decorator to memoize functions using memcache.
+def memoize(time=60*60*24, ignore_args=[], force_cache=False, version_aware=True):    
+    """Decorator to memoize functions using cachepy + memcache.
     
-    Optional Args:
+    Optional Decorator Args:
       time - duration before cache is refreshed
+      ignore_args - sequence numbers (0, 1, 3...) of decorated funcion args to be ignored 
       force_cache - forces caching on dev_server (useful for APIs, etc.)
       version_aware - ignores cache values from a different app version
-      force_run - forces fxn to run and cache to refresh
+    
+    Optional Decorated Function Args:
+      _force_run - forces caching
     
     Usage:
       
       @memoize(86400) #or memoize()
-      def updateAllEntities(key_name, params, force_run=False):
+      def updateAllEntities(key_name, params):
          entity = Model.get_by_key_name(key_name)
          for param in params.items():
             setattr(entity, param.key(), param.value())
@@ -40,34 +47,40 @@ def memoize(time=60*60*24, force_cache=False, version_aware=False):
     """
     def decorator(fxn):
         def wrapper(*args, **kwargs):
-            approved_args = ['Link', 'Key', 'str', 'unicode', 'int', 'float', 'bool'] 
-            arg_string = ""
-            for arg in args:
-                if type(arg).__name__ in approved_args: 
-                    arg_string += str(arg) + ','
-                else: raise UnsupportedArgumentError(arg)
+            arg_list = []
+            for i, arg in enumerate(args):
+                try:
+                    if not i in ignore_args: 
+                        arg_list.append(pickle.dumps(arg))
+                except PicklingError:
+                    raise UnsupportedArgumentError(arg)
             for kwarg in kwargs.items():
-                if type(kwarg[1]).__name__ in approved_args: 
-                    arg_string += str(kwarg[1]) + ','
-                else: raise UnsupportedArgumentError(kwarg)             
-            key = fxn.__name__ + '(' + arg_string + ')'
+                try:
+                    arg_list.append(pickle.dumps(kwarg[1]))
+                except PicklingError:
+                    raise UnsupportedArgumentError(kwarg)
+            key = fxn.__name__ + '(' + ','.join(arg_list) + ')'
             if version_aware:
                 key = os.environ['CURRENT_VERSION_ID'] + '/' + key
-            logging.debug('caching key: %s' % key)
-            data = memcache.get(key)
+            #logging.debug('caching key: %s' % key)
+            data = cachepy.get(key) or memcache.get(key)
             if Debug(): 
                 if not ACTIVE_ON_DEV_SERVER and not force_cache: 
-                    return fxn(*args, **kwargs) 
-            if kwargs.get('force_run'):
-                logging.info("forced execution of %s" % fxn.__name__)
+                    return fxn(*args, **kwargs)
+            if kwargs.get('_force_run'):
+                #logging.debug("forced execution of %s" % fxn.__name__)
+                pass
             elif data:
-                logging.debug('cache hit for key: %s' % key)
+                #logging.debug('cache hit for key: %s' % key)
                 if data.__class__ == NoneVal: 
                     data = None
                 return data
             data = fxn(*args, **kwargs)
-            if data is None: data = NoneVal() 
-            memcache.set(key, data, time)
+            data_to_save = data
+            if data is None:
+                data_to_save = NoneVal() 
+            cachepy.set(key, data_to_save, time / 24) #cachepy expiry time must be much shorter
+            memcache.set(key, data_to_save, time)
             return data
         return wrapper
     return decorator
@@ -81,7 +94,7 @@ class UnsupportedArgumentError(Exception):
     def __init__(self, value):
         self.arg = value
     def __str__(self):
-        return repr(type(self.arg).__name__ + " is not a supported arg type")
+        return repr(type(self.arg).__name__ + " is not a supported arg type (not pickable)")
 
 def Debug():
     '''return True if script is running in the development envionment'''
